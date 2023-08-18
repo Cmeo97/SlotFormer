@@ -15,7 +15,7 @@ Ground-Truth &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Our Prediction | Ground-Truth 
 :--------------------------------------------------:|:--------------------------------------------------: 
 ![image](src/PHYRE-00021133.gif)  |  ![image](src/PHYRE-00007001.gif)
 
-## Introduction
+## Introduction  
 
 This is the official PyTorch implementation for paper: [SlotFormer: Unsupervised Visual Dynamics Simulation with Object-Centric Models](https://arxiv.org/abs/2210.05861), which is accepted by ICLR 2023.
 The code contains:
