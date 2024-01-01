@@ -29,7 +29,7 @@ class SlotFormerParams(BaseParams):
     num_workers = 8
 
     # model configs
-    model = 'StoSAVi'  # stochastic version of SAVi
+    model = 'ConsistentStoSAVi'  # stochastic version of SAVi
     resolution = (64, 64)
     input_frames = n_sample_frames
 
@@ -60,7 +60,7 @@ class SlotFormerParams(BaseParams):
 
     # Predictor
     pred_dict = dict(
-        pred_type='mlp',  # less information fusion to avoid slots sharing objs
+        pred_type='gru',  # less information fusion to avoid slots sharing objs
         pred_rnn=False,
         pred_norm_first=True,
         pred_num_layers=2,
@@ -72,8 +72,10 @@ class SlotFormerParams(BaseParams):
     # loss configs
     loss_dict = dict(
         use_post_recon_loss=True,
+        use_consistency_loss=True,
         kld_method='var-0.01',  # prior Gaussian variance is 0.01
     )
 
     post_recon_loss_w = 1.  # posterior slots image recon
     kld_loss_w = 1e-4  # kld on kernels distribution
+    consistency_loss_w = 1.  # consistency loss

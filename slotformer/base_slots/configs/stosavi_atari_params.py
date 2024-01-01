@@ -6,7 +6,7 @@ class SlotFormerParams(BaseParams):
 
     # training settings
     gpus = 1  # 2 GPUs should also be good
-    max_epochs = 12  # 230k steps
+    max_epochs = 100  # 230k steps
     save_interval = 0.2  # save every 0.2 epoch
     save_epoch_end = True  # save ckp at the end of every epoch
     n_samples = 5  # visualization after each epoch
@@ -16,15 +16,16 @@ class SlotFormerParams(BaseParams):
     optimizer = 'Adam'
     lr = 1e-4  # a small learning rate is very important for SAVi training
     clip_grad = 0.05  # following the paper
-    warmup_steps_pct = 0.025  # warmup in the first 2.5% of total steps
+    # warmup_steps_pct = 0.025  # warmup in the first 2.5% of total steps
+    warmup_steps_pct = 0.0125  # warmup in the first 2.5% of total steps
 
     # data settings
-    dataset = 'clevrer'
-    data_root = './data/CLEVRER'
+    dataset = 'atari'
+    data_root = './data/atari'
     n_sample_frames = 6  # train on video clips of 6 frames
     frame_offset = 1  # no offset
     filter_enter = False  # no need to filter videos when training SAVi
-    train_batch_size = 64 // gpus
+    train_batch_size = 16 // gpus
     val_batch_size = train_batch_size * 2
     num_workers = 8
 
@@ -37,7 +38,8 @@ class SlotFormerParams(BaseParams):
     slot_dict = dict(
         num_slots=7,  # at most 6 objects per scene
         slot_size=128,
-        slot_mlp_size=256,
+        # slot_mlp_size=256,
+        slot_mlp_size=128*4,
         num_iterations=2,
         kernel_mlp=False,
     )

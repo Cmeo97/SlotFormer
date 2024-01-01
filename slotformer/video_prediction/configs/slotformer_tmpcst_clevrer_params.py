@@ -22,7 +22,7 @@ class SlotFormerParams(BaseParams):
     # data settings
     dataset = 'clevrer_slots'
     data_root = './data/CLEVRER'
-    slots_root = './data/CLEVRER/clevrer_slots.pkl'
+    slots_root = './data/CLEVRER/tmpcst_clevrer_slots.pkl'
     n_sample_frames = 6 + 10  # 6 burn-in, 10 rollout
     frame_offset = 2  # subsample the video by a factor of 2
     load_img = True
@@ -65,7 +65,7 @@ class SlotFormerParams(BaseParams):
         dec_resolution=(8, 8),
         dec_ks=5,
         dec_norm='',
-        dec_ckp_path='pretrained/stosavi_clevrer_params/model_12.pth',
+        dec_ckp_path='pretrained/stosavi_tmpcst_clevrer_params/model_12.pth',
     )
 
     # loss configs

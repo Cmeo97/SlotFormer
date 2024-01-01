@@ -21,15 +21,14 @@ class SlotFormerParams(BaseParams):
 
     # data settings
     dataset = 'clevrer_slots'
-    data_root = './data/CLEVRER'
-    slots_root = './data/CLEVRER/clevrer_slots.pkl'
+    data_root = './data/atari'
+    slots_root = './data/atari/clevrer_slots.pkl'
     n_sample_frames = 6 + 10  # 6 burn-in, 10 rollout
     frame_offset = 2  # subsample the video by a factor of 2
     load_img = True
     filter_enter = True  # only train on valid sequences
-    train_batch_size = 64 // gpus
+    train_batch_size = 128 // gpus
     val_batch_size = train_batch_size * 2
-    grad_accum_steps = 2
     num_workers = 8
 
     # model configs
@@ -65,7 +64,7 @@ class SlotFormerParams(BaseParams):
         dec_resolution=(8, 8),
         dec_ks=5,
         dec_norm='',
-        dec_ckp_path='pretrained/stosavi_clevrer_params/model_12.pth',
+        dec_ckp_path='pretrained/stosavi_clevrer_params/model_2.pth',
     )
 
     # loss configs
