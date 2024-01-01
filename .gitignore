@@ -4,6 +4,7 @@ data/OBJ3D
 data/CLEVRER
 data/Physion
 data/PHYRE
+data/atari
 data/*.pkl
 pretrained/*/
 pretrained/*.pth
@@ -140,3 +141,5 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+nerv/
