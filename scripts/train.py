@@ -57,9 +57,12 @@ def main(params):
             logger_id = None
         wandb.init(
             project=params.project,
+            group=params.task,
             name=logger_name,
             id=logger_id,
             dir=ckp_path,
+            config=params,
+            mode=args.mode,
         )
 
     method = build_method(
@@ -73,7 +76,7 @@ def main(params):
     )
 
     method.fit(
-        resume_from=args.weight, san_check_val_step=params.san_check_val_step)
+        resume_from=args.weight, san_check_val_step=params.san_check_val_step, skip_load=params.scratch)
 
 
 if __name__ == "__main__":
@@ -85,6 +88,8 @@ if __name__ == "__main__":
     parser.add_argument('--ddp', action='store_true', help='DDP training')
     parser.add_argument('--cudnn', action='store_true', help='cudnn benchmark')
     parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--mode', type=str, default='online')
+    parser.add_argument('--scratch', action='store_true', help='start training from scratch')
     args = parser.parse_args()
 
     # import `build_dataset/model/method` function according to `args.task`
@@ -100,7 +105,9 @@ if __name__ == "__main__":
     sys.path.append(os.path.dirname(args.params))
     params = importlib.import_module(os.path.basename(args.params))
     params = params.SlotFormerParams()
+    params.task = args.task
     params.ddp = args.ddp
+    params.scratch = args.scratch
 
     if args.fp16:
         print('INFO: using FP16 training!')
