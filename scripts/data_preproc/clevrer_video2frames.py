@@ -14,7 +14,7 @@ def video2frames(video_path):
 
 data_root = './data/CLEVRER/'
 splits = ['train', 'val', 'test']
-RESIZE = (128, 128)
+RESIZE = (64, 64)
 NUM_WORKERS = 8
 
 for split in splits:
