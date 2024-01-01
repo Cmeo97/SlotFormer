@@ -4,6 +4,7 @@ from .physion import build_physion_dataset, build_physion_slots_dataset, \
     build_physion_slots_label_dataset
 from .phyre import build_phyre_dataset, build_phyre_slots_dataset, \
     build_phyre_rollout_slots_dataset
+from .atari import build_atari_dataset, build_atari_slots_dataset
 
 
 def build_dataset(params, val_only=False):
