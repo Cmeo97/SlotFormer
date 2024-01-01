@@ -113,6 +113,7 @@ class STEVE(StoSAVi):
         ),
         loss_dict=dict(
             use_img_recon_loss=False,  # dVAE decoded img recon loss
+            train_dvae=False,  # train dVAE
         ),
         eps=1e-6,
     ):
@@ -166,14 +167,18 @@ class STEVE(StoSAVi):
         self.vocab_size = self.dvae_dict['vocab_size']
         self.down_factor = self.dvae_dict['down_factor']
         self.dvae = dVAE(vocab_size=self.vocab_size, img_channels=3)
-        ckp_path = self.dvae_dict['dvae_ckp_path']
-        assert ckp_path, 'Please provide pretrained dVAE weight'
-        ckp = torch.load(ckp_path, map_location='cpu')
-        self.dvae.load_state_dict(ckp['state_dict'])
-        # fix dVAE
-        for p in self.dvae.parameters():
-            p.requires_grad = False
-        self.dvae.eval()
+        try:
+            ckp_path = self.dvae_dict['dvae_ckp_path']
+            assert ckp_path, 'Please provide pretrained dVAE weight'
+            ckp = torch.load(ckp_path, map_location='cpu')
+            self.dvae.load_state_dict(ckp['state_dict'])
+            # fix dVAE
+            for p in self.dvae.parameters():
+                p.requires_grad = False
+            self.dvae.eval()
+        except:
+            print("Not using pretrained dVAE")
+        self.train_dvae = self.loss_dict['train_dvae']
 
     def _build_decoder(self):
         # Build Decoder
@@ -333,6 +338,10 @@ class STEVE(StoSAVi):
             z = gumbel_softmax(z_logits, tau=0.1, hard=False, dim=1)
             recon_img = self.dvae.detokenize(z)  # [B*T, C, H, W]
             out_dict['recon_img'] = recon_img
+        
+        if self.train_dvae:
+            simple_recon_img = self.dvae.detokenize(encoder_out.flatten(0, 1))
+            out_dict['simple_recon_img'] = simple_recon_img
 
         return out_dict
 
@@ -347,4 +356,8 @@ class STEVE(StoSAVi):
             recon_img = out_dict['recon_img']
             recon_loss = F.mse_loss(recon_img, gt_img)
             loss_dict['img_recon_loss'] = recon_loss
+        if self.train_dvae:
+            simple_recon_img = out_dict['simple_recon_img']
+            simple_recon_loss = F.mse_loss(simple_recon_img, gt_img)
+            loss_dict['simple_recon_loss'] = simple_recon_loss
         return loss_dict

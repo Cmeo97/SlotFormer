@@ -14,7 +14,7 @@ from .models import cosine_anneal, get_lr, gumbel_softmax, make_one_hot, \
 
 def build_method(**kwargs):
     params = kwargs['params']
-    if params.model == 'StoSAVi':
+    if params.model == 'StoSAVi' or params.model == 'ConsistentStoSAVi':
         return SAViMethod(**kwargs)
     elif params.model == 'dVAE':
         return dVAEMethod(**kwargs)

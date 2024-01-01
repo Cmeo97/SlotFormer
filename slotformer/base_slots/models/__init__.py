@@ -1,4 +1,4 @@
-from .savi import StoSAVi
+from .savi import StoSAVi, ConsistentStoSAVi
 from .dVAE import dVAE
 from .steve import STEVE
 from .utils import get_lr, to_rgb_from_tensor, assert_shape, SoftPositionEmbed
@@ -9,6 +9,16 @@ from .steve_transformer import STEVETransformerDecoder
 def build_model(params):
     if params.model == 'StoSAVi':
         return StoSAVi(
+            resolution=params.resolution,
+            clip_len=params.input_frames,
+            slot_dict=params.slot_dict,
+            enc_dict=params.enc_dict,
+            dec_dict=params.dec_dict,
+            pred_dict=params.pred_dict,
+            loss_dict=params.loss_dict,
+        )
+    elif params.model == 'ConsistentStoSAVi':
+        return ConsistentStoSAVi(
             resolution=params.resolution,
             clip_len=params.input_frames,
             slot_dict=params.slot_dict,

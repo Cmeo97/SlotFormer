@@ -204,7 +204,7 @@ class CLEVRERVQADataset(Dataset):
         """Convert a question str to a 1d np array and do the padding."""
         q = q_str.lower().replace('?', '').split(' ')
         q_tokens = [self.q_vocab[word] for word in q if word]  # eliminate ''
-        pad_mask = np.ones(pad_num).astype(np.bool)
+        pad_mask = np.ones(pad_num).astype(np.bool_)
         pad_mask[:len(q_tokens)] = False
         q_tokens += [
             self.q_vocab['PAD'] for _ in range(pad_num - len(q_tokens))

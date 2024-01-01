@@ -302,6 +302,8 @@ class StoSAVi(BaseModel):
                 [self.slot_size, self.slot_size * 2, self.slot_size],
                 norm_first=self.pred_dict['pred_norm_first'],
             )
+        elif pred_type == 'gru':
+            self.predictor = nn.GRU(self.slot_size, self.slot_size)
         else:
             self.predictor = TransformerPredictor(
                 self.slot_size,
@@ -544,3 +546,242 @@ class StoSAVi(BaseModel):
     @property
     def device(self):
         return self.slot_attention.device
+
+
+class ConsistentStoSAVi(StoSAVi):
+    """SA model with stochastic kernel and additional prior_slots head.
+    If loss_dict['kld_method'] = 'none', it becomes a standard SAVi model.
+    """
+
+    def __init__(
+        self,
+        resolution,
+        clip_len,
+        slot_dict=dict(
+            num_slots=7,
+            slot_size=128,
+            slot_mlp_size=256,
+            num_iterations=2,
+            kernel_mlp=True,
+        ),
+        enc_dict=dict(
+            enc_channels=(3, 64, 64, 64, 64),
+            enc_ks=5,
+            enc_out_channels=128,
+            enc_norm='',
+        ),
+        dec_dict=dict(
+            dec_channels=(128, 64, 64, 64, 64),
+            dec_resolution=(8, 8),
+            dec_ks=5,
+            dec_norm='',
+        ),
+        pred_dict=dict(
+            pred_type='transformer',
+            pred_rnn=True,
+            pred_norm_first=True,
+            pred_num_layers=2,
+            pred_num_heads=4,
+            pred_ffn_dim=512,
+            pred_sg_every=None,
+        ),
+        loss_dict=dict(
+            use_post_recon_loss=True,
+            kld_method='var-0.01',  # 'none' to make it deterministic
+        ),
+        eps=1e-6,
+    ):
+        super().__init__(resolution, clip_len, slot_dict, enc_dict, dec_dict,
+                         pred_dict, loss_dict, eps)
+
+        self._build_loss()
+
+    def _build_loss(self):
+        """Loss calculation settings."""
+        self.use_post_recon_loss = self.loss_dict['use_post_recon_loss']
+        self.use_consistency_loss = self.loss_dict['use_consistency_loss']
+        assert self.use_post_recon_loss
+        # stochastic SAVi by sampling the kernels
+        kld_method = self.loss_dict['kld_method']
+        # a smaller sigma for the prior distribution
+        if '-' in kld_method:
+            kld_method, kld_var = kld_method.split('-')
+            self.kld_log_var = math.log(float(kld_var))
+        else:
+            self.kld_log_var = math.log(1.)
+        self.kld_method = kld_method
+        assert self.kld_method in ['var', 'none']
+
+    def encode(self, img, prev_slots=None):
+        """Encode from img to slots."""
+        B, T, C, H, W = img.shape
+        img = img.flatten(0, 1)
+
+        encoder_out = self._get_encoder_out(img)
+        encoder_out = encoder_out.unflatten(0, (B, T))
+        # `encoder_out` has shape: [B, T, H*W, out_features]
+
+        # init slots
+        init_latents = self.init_latents.repeat(B, 1, 1)  # [B, N, C]
+
+        # apply SlotAttn on video frames via reusing slots
+        all_kernel_dist, all_post_slots = [], []
+        hidden = None
+        for idx in range(T):
+            # init
+            if prev_slots is None:
+                latents = init_latents  # [B, N, C]
+            else:
+                latents, hidden = self.predictor(prev_slots, hidden)  # [B, N, C]
+
+            # stochastic `kernels` as SA input
+            kernel_dist = self.kernel_dist_layer(latents)
+            kernels = self._sample_dist(kernel_dist)
+            all_kernel_dist.append(kernel_dist)
+
+            # perform SA to get `post_slots`
+            post_slots = self.slot_attention(encoder_out[:, idx], kernels)
+            all_post_slots.append(post_slots)
+
+            # next timestep
+            prev_slots = post_slots
+
+        # (B, T, self.num_slots, self.slot_size)
+        kernel_dist = torch.stack(all_kernel_dist, dim=1)
+        post_slots = torch.stack(all_post_slots, dim=1)
+
+        return kernel_dist, post_slots, encoder_out
+
+    def forward(self, data_dict):
+        """A wrapper for model forward.
+
+        If the input video is too long in testing, we manually cut it.
+        """
+        img = data_dict['img']
+        T = img.shape[1]
+        if T <= self.clip_len or self.training:
+            return self._forward(img, None)
+
+        # try to find the max len to input each time
+        clip_len = T
+        while True:
+            try:
+                _ = self._forward(img[:, :clip_len], None)
+                del _
+                torch.cuda.empty_cache()
+                break
+            except RuntimeError:  # CUDA out of memory
+                clip_len = clip_len // 2 + 1
+        # update `clip_len`
+        self.clip_len = max(self.clip_len, clip_len)
+        # no need to split
+        if clip_len == T:
+            return self._forward(img, None)
+
+        # split along temporal dim
+        cat_dict = None
+        prev_slots = None
+        for clip_idx in range(0, T, clip_len):
+            out_dict = self._forward(img[:, clip_idx:clip_idx + clip_len],
+                                     prev_slots)
+            # because this should be in test mode, we detach the outputs
+            if cat_dict is None:
+                cat_dict = {k: [v.detach()] for k, v in out_dict.items()}
+            else:
+                for k, v in out_dict.items():
+                    cat_dict[k].append(v.detach())
+            prev_slots = cat_dict['post_slots'][-1][:, -1].detach().clone()
+            del out_dict
+            torch.cuda.empty_cache()
+        cat_dict = {k: torch_cat(v, dim=1) for k, v in cat_dict.items()}
+        return cat_dict
+
+    def _forward(self, img, prev_slots=None):
+        """Forward function.
+
+        Args:
+            img: [B, T, C, H, W]
+            prev_slots: [B, num_slots, slot_size] or None,
+                the `post_slots` from last timestep.
+        """
+        # reset RNN states if this is the first frame
+        # if prev_slots is None:
+        #     self._reset_rnn()
+
+        B, T = img.shape[:2]
+        kernel_dist, post_slots, encoder_out = \
+            self.encode(img, prev_slots=prev_slots)
+        # `slots` has shape: [B, T, self.num_slots, self.slot_size]
+
+        out_dict = {
+            'post_slots': post_slots,  # [B, T, num_slots, C]
+            'kernel_dist': kernel_dist,  # [B, T, num_slots, 2C]
+            'img': img,  # [B, T, 3, H, W]
+        }
+        if self.testing:
+            return out_dict
+
+        if self.use_post_recon_loss:
+            post_recon_img, post_recons, post_masks, _ = \
+                self.decode(post_slots.flatten(0, 1))
+            post_dict = {
+                'post_recon_combined': post_recon_img,  # [B*T, 3, H, W]
+                'post_recons': post_recons,  # [B*T, num_slots, 3, H, W]
+                'post_masks': post_masks,  # [B*T, num_slots, 1, H, W]
+            }
+            out_dict.update(
+                {k: v.unflatten(0, (B, T))
+                 for k, v in post_dict.items()})
+
+        return out_dict
+
+    def decode(self, slots):
+        """Decode from slots to reconstructed images and masks."""
+        # `slots` has shape: [B, self.num_slots, self.slot_size].
+        bs, num_slots, slot_size = slots.shape
+        height, width = self.resolution
+        num_channels = 3
+
+        # spatial broadcast
+        decoder_in = slots.view(bs * num_slots, slot_size, 1, 1)
+        decoder_in = decoder_in.repeat(1, 1, self.dec_resolution[0],
+                                       self.dec_resolution[1])
+
+        out = self.decoder_pos_embedding(decoder_in)
+        out = self.decoder(out)
+        # `out` has shape: [B*num_slots, 4, H, W].
+
+        out = out.view(bs, num_slots, num_channels + 1, height, width)
+        recons = out[:, :, :num_channels, :, :]  # [B, num_slots, 3, H, W]
+        masks = out[:, :, -1:, :, :]
+        masks = F.softmax(masks, dim=1)  # [B, num_slots, 1, H, W]
+        recon_combined = torch.sum(recons * masks, dim=1)  # [B, 3, H, W]
+        return recon_combined, recons, masks, slots
+
+    def calc_train_loss(self, data_dict, out_dict):
+        """Compute loss that are general for SlotAttn models."""
+        kld_loss = self._kld_loss(out_dict['kernel_dist'],
+                                  out_dict['post_slots'])
+        loss_dict = {
+            'kld_loss': kld_loss,
+        }
+        if self.use_post_recon_loss:
+            post_recon_combined = out_dict['post_recon_combined']
+            img = out_dict['img']
+            loss_dict['post_recon_loss'] = F.mse_loss(post_recon_combined, img)
+        if self.use_consistency_loss:
+            cosine_loss = 0.
+            for t in range(out_dict['post_slots'].shape[1]-1):
+                z_curr = out_dict['post_slots'][:, t]
+                z_next = out_dict['post_slots'][:, t+1]
+                z_curr = z_curr / z_curr.norm(dim=-1, keepdim=True)
+                z_next = z_next / z_next.norm(dim=-1, keepdim=True)
+                # matrix of cosine similarities between all pairs of slots for each sample in batch
+                mat = torch.bmm(z_curr, z_next.transpose(1, 2))
+                # softmax of mat
+                mat = F.softmax(mat, dim=-1)
+                # cross entropy loss between mat and identity matrix
+                cosine_loss += F.cross_entropy(mat, torch.arange(out_dict['post_slots'].shape[2], device=mat.device).expand(mat.shape[0], -1))
+            cosine_loss /= (out_dict['post_slots'].shape[1]-1)
+            loss_dict['consistency_loss'] = cosine_loss
+        return loss_dict

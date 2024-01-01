@@ -144,7 +144,8 @@ class SlotFormerMethod(SAViMethod):
         """model is a simple nn.Module, not warpped in e.g. DataParallel."""
         model.eval()
         dst = self.val_loader.dataset
-        sampled_idx = self._get_sample_idx(self.params.n_samples, dst)
+        # sampled_idx = self._get_sample_idx(self.params.n_samples, dst)
+        sampled_idx = torch.arange(0, 5)
         results, rollout_results, compare_results = [], [], []
         for i in sampled_idx:
             video, slots = self._read_video_and_slots(dst, i.item())
@@ -156,6 +157,9 @@ class SlotFormerMethod(SAViMethod):
             save_video = self._make_video_grid(img, recon_combined, recons,
                                                masks)
             results.append(save_video)
+
+            self._save_as_grid(img, recon_combined, recons, masks, i, prefix='recon')
+
             # rollout
             past_steps = self.params.input_frames
             past_slots = slots[:past_steps][None]  # [1, t, N, C]
@@ -174,6 +178,8 @@ class SlotFormerMethod(SAViMethod):
                                                  rollout_combined)
             compare_results.append(compare_video)
 
+            self._save_as_grid(img, rollout_combined, recons, masks, i, prefix='rollout')
+
         log_dict = {
             'val/video': self._convert_video(results),
             'val/rollout_video': self._convert_video(rollout_results),
@@ -181,6 +187,26 @@ class SlotFormerMethod(SAViMethod):
         }
         wandb.log(log_dict, step=self.it)
         torch.cuda.empty_cache()
+
+
+    @torch.no_grad()
+    def _save_as_grid(self, img, rollout_combined, recons, masks, idx, prefix=''):
+        scale = 0. if self.params.get('reverse_color', False) else 1.
+        # combine images in a way so we can display all outputs in one grid
+        # output rescaled to be between 0 and 1
+        out = to_rgb_from_tensor(
+            torch.cat(
+                [
+                    img.unsqueeze(1),  # original images
+                    rollout_combined.unsqueeze(1),  # reconstructions
+                    masks.repeat(1,1,3,1,1), # masks
+                    recons * masks + (1. - masks) * scale,  # each slot
+                ],
+                dim=1,
+            ))  # [T, num_slots+2, 3, H, W]
+        t = out.shape[0]
+        out = out.permute(1, 0, 2, 3, 4).flatten(0, 1) # [(num_slots+2)*T, 3, H, W]
+        vutils.save_image(out, f'/project/SlotFormer/checkpoint/outputs/{prefix}_tmpcst_{self.it}_{idx}.png', nrow=t)
 
 
 class STEVESlotFormerMethod(SlotFormerMethod):

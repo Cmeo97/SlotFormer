@@ -8,23 +8,44 @@ from tqdm import tqdm
 
 import torch
 from torch.utils.data._utils.collate import default_collate
+import torchvision.utils as vutils
 
 from nerv.utils import dump_obj, mkdir_or_exist
 
 from models import build_model
 from datasets import build_dataset, build_clevrer_dataset
 
+@torch.no_grad()
+def _save_as_grid(img, rollout_combined, recons, masks, idx, prefix=''):
+    scale = 1.
+    # combine images in a way so we can display all outputs in one grid
+    # output rescaled to be between 0 and 1
+    out = (
+        torch.cat(
+            [
+                img.unsqueeze(1),  # original images
+                rollout_combined.unsqueeze(1),  # reconstructions
+                masks.repeat(1,1,3,1,1), # masks
+                recons * masks + (1. - masks) * scale,  # each slot
+            ],
+            dim=1,
+        )).mul(0.5).add(0.5).clamp(0,1)  # [T, num_slots+2, 3, H, W]
+    t = out.shape[0]
+    out = out.permute(1, 0, 2, 3, 4).flatten(0, 1) # [(num_slots+2)*T, 3, H, W]
+    vutils.save_image(out, f'/project/SlotFormer/checkpoint/outputs/extracted/{prefix}_{idx}.png', nrow=t)
+
 
 @torch.no_grad()
 def extract_video_slots(model, dataset):
     """Returns slots extracted from each video of the dataset."""
     model.eval()
-    slot_key = 'post_slots' if params.model == 'StoSAVi' else 'slots'
+    slot_key = 'post_slots' if 'StoSAVi' in params.model else 'slots'
     torch.cuda.empty_cache()
     # videos are long, so we use 1 video per GPU as 1 batch
     bs = torch.cuda.device_count()
     all_slots = []
     range_idx = range(0, dataset.num_videos, bs)
+    # range_idx = range(0, 100, bs)
     for start_idx in tqdm(range_idx):
         end_idx = min(start_idx + bs, dataset.num_videos)
         data_dict = default_collate(
@@ -32,6 +53,10 @@ def extract_video_slots(model, dataset):
         in_dict = {'img': data_dict['video'].float().cuda()}
         out_dict = model(in_dict)
         slots = out_dict[slot_key].detach().cpu().numpy()  # [B, T, n, c]
+
+        # recon_combined, recons, masks, _ = model.module.decode(out_dict[slot_key][0])
+        # _save_as_grid(in_dict['img'][0], recon_combined, recons, masks, start_idx, prefix='extracted')
+
         all_slots += [slot for slot in slots]
         torch.cuda.empty_cache()
     all_slots = np.stack(all_slots, axis=0)  # [N, T, n, c]
@@ -88,8 +113,12 @@ def process_video(model):
         ln_path = os.path.join(
             os.path.dirname(args.weight), f'{args.subset}_slots.pkl')
     else:
-        ln_path = os.path.join(
-            os.path.dirname(args.weight), 'slots.pkl')
+        if "tmpcst" in args.save_path:
+            ln_path = os.path.join(
+                os.path.dirname(args.weight), 'tmpcst_slots.pkl')
+        else:
+            ln_path = os.path.join(
+                os.path.dirname(args.weight), 'slots.pkl')
     os.system(r'ln -s {} {}'.format(args.save_path, ln_path))
 
 
