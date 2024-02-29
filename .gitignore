@@ -143,3 +143,8 @@ dmypy.json
 .pyre/
 
 nerv/
+*.sh.*
+scripts/train_*.sh
+scripts/extract_*.sh
+scripts/rollout_*.sh
+scripts/test_*.sh
