@@ -5,7 +5,7 @@ class SlotFormerParams(BaseParams):
     project = 'SlotFormer'
 
     # training settings
-    gpus = 2 # 2 GPUs should also be good
+    gpus = 4 # 2 GPUs should also be good
     max_epochs = 12  # 230k steps
     save_interval = 0.2  # save every 0.2 epoch
     save_epoch_end = True  # save ckp at the end of every epoch
@@ -24,7 +24,7 @@ class SlotFormerParams(BaseParams):
     n_sample_frames = 6  # train on video clips of 6 frames
     frame_offset = 1  # no offset
     filter_enter = False  # no need to filter videos when training SAVi
-    train_batch_size = 64 // gpus
+    train_batch_size = 32 // gpus
     val_batch_size = train_batch_size * 2
     num_workers = gpus * 2
 
@@ -82,4 +82,4 @@ class SlotFormerParams(BaseParams):
 
     post_recon_loss_w = 1.  # posterior slots image recon
     kld_loss_w = 1e-4  # kld on kernels distribution
-    consistency_loss_w = 1.  # consistency loss
+    consistency_loss_w = 0.1  # consistency loss
