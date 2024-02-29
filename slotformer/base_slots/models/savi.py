@@ -99,7 +99,7 @@ class SlotAttention(nn.Module):
             slots = slots.view(bs, self.num_slots, self.slot_size)
             slots = slots + self.mlp(slots)
 
-        return slots
+        return slots, F.softmax(attn_logits, dim=-1)
 
     @property
     def dtype(self):
@@ -303,7 +303,11 @@ class StoSAVi(BaseModel):
                 norm_first=self.pred_dict['pred_norm_first'],
             )
         elif pred_type == 'gru':
-            self.predictor = nn.GRU(self.slot_size, self.slot_size)
+            self.predictor = nn.GRU(self.slot_size, self.slot_size, batch_first=True)
+        elif pred_type == 'grucell':
+            self.predictor = nn.GRUCell(self.slot_size, self.slot_size)
+        elif pred_type == 'lstm':
+            self.predictor = nn.LSTMCell(self.slot_size, self.slot_size)
         else:
             self.predictor = TransformerPredictor(
                 self.slot_size,
@@ -326,6 +330,7 @@ class StoSAVi(BaseModel):
     def _build_loss(self):
         """Loss calculation settings."""
         self.use_post_recon_loss = self.loss_dict['use_post_recon_loss']
+        self.use_consistency_loss = self.loss_dict['use_consistency_loss']
         assert self.use_post_recon_loss
         # stochastic SAVi by sampling the kernels
         kld_method = self.loss_dict['kld_method']
@@ -392,6 +397,7 @@ class StoSAVi(BaseModel):
 
         # apply SlotAttn on video frames via reusing slots
         all_kernel_dist, all_post_slots = [], []
+        hidden = None
         for idx in range(T):
             # init
             if prev_slots is None:
@@ -405,7 +411,7 @@ class StoSAVi(BaseModel):
             all_kernel_dist.append(kernel_dist)
 
             # perform SA to get `post_slots`
-            post_slots = self.slot_attention(encoder_out[:, idx], kernels)
+            post_slots, _ = self.slot_attention(encoder_out[:, idx], kernels)
             all_post_slots.append(post_slots)
 
             # next timestep
@@ -537,6 +543,21 @@ class StoSAVi(BaseModel):
             post_recon_combined = out_dict['post_recon_combined']
             img = out_dict['img']
             loss_dict['post_recon_loss'] = F.mse_loss(post_recon_combined, img)
+        if self.use_consistency_loss:
+            cosine_loss = 0.
+            for t in range(out_dict['post_slots'].shape[1]-1):
+                z_curr = out_dict['post_slots'][:, t]
+                z_next = out_dict['post_slots'][:, t+1]
+                z_curr = z_curr / z_curr.norm(dim=-1, keepdim=True)
+                z_next = z_next / z_next.norm(dim=-1, keepdim=True)
+                # matrix of cosine similarities between all pairs of slots for each sample in batch
+                mat = torch.bmm(z_curr, z_next.transpose(1, 2))
+                # softmax of mat
+                mat = F.softmax(mat, dim=-1)
+                # cross entropy loss between mat and identity matrix
+                cosine_loss += F.cross_entropy(mat, torch.arange(out_dict['post_slots'].shape[2], device=mat.device).expand(mat.shape[0], -1))
+            cosine_loss /= (out_dict['post_slots'].shape[1]-1)
+            loss_dict['consistency_loss'] = cosine_loss
         return loss_dict
 
     @property
@@ -625,14 +646,20 @@ class ConsistentStoSAVi(StoSAVi):
         init_latents = self.init_latents.repeat(B, 1, 1)  # [B, N, C]
 
         # apply SlotAttn on video frames via reusing slots
-        all_kernel_dist, all_post_slots = [], []
+        all_kernel_dist, all_post_slots, all_attns = [], [], []
         hidden = None
         for idx in range(T):
             # init
             if prev_slots is None:
                 latents = init_latents  # [B, N, C]
             else:
-                latents, hidden = self.predictor(prev_slots, hidden)  # [B, N, C]
+                if self.pred_dict['pred_type'] == 'gru':
+                    latents, hidden = self.predictor(prev_slots, hidden)  # [B, N, C]
+                elif self.pred_dict['pred_type'] == 'grucell':
+                    latents = self.predictor(prev_slots.view(-1, self.slot_size), hidden)
+                    latents = latents.view(-1, self.num_slots, self.slot_size)
+                else:
+                    latents = self.predictor(prev_slots)
 
             # stochastic `kernels` as SA input
             kernel_dist = self.kernel_dist_layer(latents)
@@ -640,17 +667,22 @@ class ConsistentStoSAVi(StoSAVi):
             all_kernel_dist.append(kernel_dist)
 
             # perform SA to get `post_slots`
-            post_slots = self.slot_attention(encoder_out[:, idx], kernels)
+            post_slots, attns = self.slot_attention(encoder_out[:, idx], kernels)
             all_post_slots.append(post_slots)
+            all_attns.append(attns) # [B, num_inputs, num_slots]
 
             # next timestep
-            prev_slots = post_slots
+            if 'pred_from' not in self.pred_dict.keys() or self.pred_dict['pred_from'] == 'last':
+                prev_slots = post_slots
+            else:
+                prev_slots = kernels
 
         # (B, T, self.num_slots, self.slot_size)
         kernel_dist = torch.stack(all_kernel_dist, dim=1)
         post_slots = torch.stack(all_post_slots, dim=1)
+        attn_maps = torch.stack(all_attns, dim=1)
 
-        return kernel_dist, post_slots, encoder_out
+        return kernel_dist, post_slots, attn_maps, encoder_out
 
     def forward(self, data_dict):
         """A wrapper for model forward.
@@ -709,11 +741,12 @@ class ConsistentStoSAVi(StoSAVi):
         #     self._reset_rnn()
 
         B, T = img.shape[:2]
-        kernel_dist, post_slots, encoder_out = \
+        kernel_dist, post_slots, attn_maps, encoder_out = \
             self.encode(img, prev_slots=prev_slots)
         # `slots` has shape: [B, T, self.num_slots, self.slot_size]
 
         out_dict = {
+            'attn_maps': attn_maps,  # [B, T, num_inputs, num_slots]
             'post_slots': post_slots,  # [B, T, num_slots, C]
             'kernel_dist': kernel_dist,  # [B, T, num_slots, 2C]
             'img': img,  # [B, T, 3, H, W]
@@ -770,18 +803,50 @@ class ConsistentStoSAVi(StoSAVi):
             img = out_dict['img']
             loss_dict['post_recon_loss'] = F.mse_loss(post_recon_combined, img)
         if self.use_consistency_loss:
-            cosine_loss = 0.
-            for t in range(out_dict['post_slots'].shape[1]-1):
-                z_curr = out_dict['post_slots'][:, t]
-                z_next = out_dict['post_slots'][:, t+1]
-                z_curr = z_curr / z_curr.norm(dim=-1, keepdim=True)
-                z_next = z_next / z_next.norm(dim=-1, keepdim=True)
-                # matrix of cosine similarities between all pairs of slots for each sample in batch
-                mat = torch.bmm(z_curr, z_next.transpose(1, 2))
-                # softmax of mat
-                mat = F.softmax(mat, dim=-1)
-                # cross entropy loss between mat and identity matrix
-                cosine_loss += F.cross_entropy(mat, torch.arange(out_dict['post_slots'].shape[2], device=mat.device).expand(mat.shape[0], -1))
-            cosine_loss /= (out_dict['post_slots'].shape[1]-1)
+            if self.pred_dict['const_type'] == 'repr':
+                B, T, num_slots, slot_dim = out_dict['post_slots'].shape
+                cosine_loss = 0.
+                for t in range(out_dict['post_slots'].shape[1]-1):
+                    z_curr = out_dict['post_slots'][:, t]
+                    z_next = out_dict['post_slots'][:, t+1]
+                    z_curr = z_curr / z_curr.norm(dim=-1, keepdim=True)
+                    z_next = z_next / z_next.norm(dim=-1, keepdim=True)
+                    # # matrix of cosine similarities between all pairs of slots for each sample in batch
+                    # mat = torch.bmm(z_curr, z_next.transpose(1, 2))
+                    # # softmax of mat
+                    # mat = F.softmax(mat, dim=-1)
+                    # # cross entropy loss between mat and identity matrix
+                    # cosine_loss += F.cross_entropy(mat, torch.arange(out_dict['post_slots'].shape[2], device=mat.device).expand(mat.shape[0], -1))
+
+                    pairwise_sim = torch.bmm(z_curr, z_next.transpose(1, 2)) # cosine similarity 
+                    loss = F.mse_loss(pairwise_sim, torch.eye(num_slots, device=pairwise_sim.device).expand(B, -1, -1)) # MSE loss
+                    # loss = F.cross_entropy(pairwise_sim, torch.eye(num_slots, device=pairwise_sim.device).expand(B, -1, -1)) # CE loss
+                    cosine_loss += loss
+
+                cosine_loss /= (out_dict['post_slots'].shape[1]-1)
+            elif self.pred_dict['const_type'] == 'attn':
+                B, T, num_inputs, num_slots = out_dict['attn_maps'].shape
+                cosine_loss = 0.
+                for t in range(out_dict['attn_maps'].shape[1]-1):
+                    attn_curr = out_dict['attn_maps'][:, t]
+                    attn_next = out_dict['attn_maps'][:, t+1]
+                    attn_curr = attn_curr / attn_curr.norm(dim=1, keepdim=True)
+                    attn_next = attn_next / attn_next.norm(dim=1, keepdim=True)
+
+                    pairwise_sim = torch.bmm(attn_curr.transpose(1, 2), attn_next) # cosine similarity 
+                    # pairwise_sim = torch.cdist(attn_curr.transpose(1, 2), attn_next.transpose(1, 2), p=2) # L2 distance
+                    
+                    # loss = F.mse_loss(pairwise_sim, torch.eye(num_slots, device=pairwise_sim.device).expand(B, -1, -1)) # MSE loss
+                    # loss = torch.pow(pairwise_sim - torch.eye(num_slots, device=pairwise_sim.device).expand(B, -1, -1), 2).sum(dim=(1,2)).mean() # MSE loss sum
+                    # loss = F.mse_loss(torch.diagonal(pairwise_sim, dim1=-2, dim2=-1), torch.ones(num_slots, device=pairwise_sim.device).expand(B, -1)) # MSE loss (diag elem only)
+                    loss = torch.pow(torch.diagonal(pairwise_sim, dim1=-2, dim2=-1) - torch.ones(num_slots, device=pairwise_sim.device).expand(B, -1), 2).mean() # MSE loss (diag elem only) sum
+                    # loss = F.cross_entropy(pairwise_sim, torch.eye(num_slots, device=pairwise_sim.device).expand(B, -1, -1)) # CE loss
+                    # loss = F.cross_entropy(torch.diagonal(pairwise_sim, dim1=-2, dim2=-1), torch.ones(num_slots, device=pairwise_sim.device).expand(B, -1)) # CE loss (diag elem only)
+                    # loss = torch.abs(torch.diagonal(pairwise_sim, dim1=-2, dim2=-1) - torch.ones(num_slots, device=pairwise_sim.device).expand(B, -1)).mean()
+                    
+                    # loss = (1 - attn_curr * attn_next).sum() # originally intended?
+                    cosine_loss += loss
+                cosine_loss /= (out_dict['attn_maps'].shape[1]-1)
+                # cosine_loss /= (out_dict['attn_maps'].shape[1]-1) * B * num_inputs # originally intended?
             loss_dict['consistency_loss'] = cosine_loss
         return loss_dict
