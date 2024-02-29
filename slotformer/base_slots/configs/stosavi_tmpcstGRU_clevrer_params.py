@@ -24,12 +24,12 @@ class SlotFormerParams(BaseParams):
     n_sample_frames = 6  # train on video clips of 6 frames
     frame_offset = 1  # no offset
     filter_enter = False  # no need to filter videos when training SAVi
-    train_batch_size = 64 // gpus
+    train_batch_size = 64 # // gpus
     val_batch_size = train_batch_size * 2
     num_workers = 8
 
     # model configs
-    model = 'StoSAVi'  # stochastic version of SAVi
+    model = 'ConsistentStoSAVi'  # stochastic version of SAVi
     resolution = (64, 64)
     input_frames = n_sample_frames
 
@@ -60,7 +60,7 @@ class SlotFormerParams(BaseParams):
 
     # Predictor
     pred_dict = dict(
-        pred_type='mlp',  # less information fusion to avoid slots sharing objs
+        pred_type='gru',  # less information fusion to avoid slots sharing objs
         pred_rnn=False,
         pred_norm_first=True,
         pred_num_layers=2,

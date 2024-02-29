@@ -5,7 +5,7 @@ class SlotFormerParams(BaseParams):
     project = 'SlotFormer'
 
     # training settings
-    gpus = 1  # 2 GPUs should also be good
+    gpus = 2 # 2 GPUs should also be good
     max_epochs = 12  # 230k steps
     save_interval = 0.2  # save every 0.2 epoch
     save_epoch_end = True  # save ckp at the end of every epoch
@@ -26,10 +26,10 @@ class SlotFormerParams(BaseParams):
     filter_enter = False  # no need to filter videos when training SAVi
     train_batch_size = 64 // gpus
     val_batch_size = train_batch_size * 2
-    num_workers = 8
+    num_workers = gpus * 2
 
     # model configs
-    model = 'StoSAVi'  # stochastic version of SAVi
+    model = 'ConsistentStoSAVi'  # stochastic version of SAVi
     resolution = (64, 64)
     input_frames = n_sample_frames
 
@@ -60,20 +60,24 @@ class SlotFormerParams(BaseParams):
 
     # Predictor
     pred_dict = dict(
-        pred_type='mlp',  # less information fusion to avoid slots sharing objs
+        pred_type='grucell',  # less information fusion to avoid slots sharing objs
         pred_rnn=False,
         pred_norm_first=True,
         pred_num_layers=2,
         pred_num_heads=4,
         pred_ffn_dim=slot_dict['slot_size'] * 4,
         pred_sg_every=None,
+        pred_from='last', # [initial, last]
+        const_type='attn', # [repr, attn]
     )
 
     # loss configs
     loss_dict = dict(
         use_post_recon_loss=True,
         use_consistency_loss=True,
+        use_gate_loss=False,
         kld_method='var-0.01',  # prior Gaussian variance is 0.01
+        # kld_method='none'
     )
 
     post_recon_loss_w = 1.  # posterior slots image recon
