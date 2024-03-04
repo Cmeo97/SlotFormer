@@ -33,7 +33,7 @@ class SlotFormerParams(BaseParams):
     num_workers = 8
 
     # model configs
-    model = 'STEVE'
+    model = 'ConsistentSTEVE'
     resolution = (128, 128)
     input_frames = n_sample_frames
 
@@ -76,20 +76,24 @@ class SlotFormerParams(BaseParams):
 
     # Predictor
     pred_dict = dict(
-        pred_type='transformer',
-        pred_rnn=True,
+        pred_type='grucell',
+        pred_rnn=False,
         pred_norm_first=True,
         pred_num_layers=2,
         pred_num_heads=4,
         pred_ffn_dim=slot_size * 4,
         pred_sg_every=None,
+        pred_from='last', # [initial, last]
+        const_type='attn', # [repr, attn]
     )
 
     # loss settings
     loss_dict = dict(
         use_img_recon_loss=True,
         train_dvae=False,  # additional img recon loss via dVAE decoder
+        use_consistency_loss=True,
     )
 
     token_recon_loss_w = 1.
     img_recon_loss_w = 1.
+    consistency_loss_w = 0.1  # consistency loss

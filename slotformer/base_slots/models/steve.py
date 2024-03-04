@@ -70,7 +70,7 @@ class SlotAttentionWMask(SlotAttention):
             slots = slots.view(bs, self.num_slots, self.slot_size)
             slots = slots + self.mlp(slots)
 
-        return slots, seg_mask
+        return slots, F.softmax(attn_logits, dim=-1), seg_mask
 
 
 class STEVE(StoSAVi):
@@ -219,7 +219,7 @@ class STEVE(StoSAVi):
                 latents = self.predictor(prev_slots)  # [B, N, C]
 
             # SA to get `post_slots`
-            slots, masks = self.slot_attention(encoder_out[:, idx], latents)
+            slots, _, masks = self.slot_attention(encoder_out[:, idx], latents)
             all_slots.append(slots)
             all_masks.append(masks.unflatten(-1, self.visual_resolution))
 
@@ -360,4 +360,259 @@ class STEVE(StoSAVi):
             simple_recon_img = out_dict['simple_recon_img']
             simple_recon_loss = F.mse_loss(simple_recon_img, gt_img)
             loss_dict['simple_recon_loss'] = simple_recon_loss
+        return loss_dict
+
+
+class ConsistentSTEVE(STEVE):
+    """SA model with TransformerDecoder predicting patch tokens."""
+
+    def __init__(
+        self,
+        resolution,
+        clip_len,
+        slot_dict=dict(
+            num_slots=7,
+            slot_size=128,
+            slot_mlp_size=256,
+            num_iterations=2,
+        ),
+        dvae_dict=dict(
+            down_factor=4,
+            vocab_size=4096,
+            dvae_ckp_path='',
+        ),
+        enc_dict=dict(
+            enc_channels=(3, 64, 64, 64, 64),
+            enc_ks=5,
+            enc_out_channels=128,
+            enc_norm='',
+        ),
+        dec_dict=dict(
+            dec_type='slate',
+            dec_num_layers=4,
+            dec_num_heads=4,
+            dec_d_model=128,
+        ),
+        pred_dict=dict(
+            pred_rnn=True,
+            pred_norm_first=True,
+            pred_num_layers=2,
+            pred_num_heads=4,
+            pred_ffn_dim=512,
+            pred_sg_every=None,
+        ),
+        loss_dict=dict(
+            use_img_recon_loss=False,  # dVAE decoded img recon loss
+            train_dvae=False,  # train dVAE
+        ),
+        eps=1e-6,
+    ):
+        super().__init__(resolution, clip_len, slot_dict, dvae_dict, enc_dict, dec_dict,
+                         pred_dict, loss_dict, eps)
+
+        self._build_loss()
+
+    def _build_loss(self):
+        """Loss calculation settings."""
+        self.use_img_recon_loss = self.loss_dict['use_img_recon_loss']
+        self.use_consistency_loss = self.loss_dict['use_consistency_loss']
+
+        # a hack for only extracting slots
+        self.testing = False
+
+    def encode(self, img, prev_slots=None):
+        """Encode from img to slots."""
+        B, T = img.shape[:2]
+        img = img.flatten(0, 1)
+
+        encoder_out = self._get_encoder_out(img)
+        encoder_out = encoder_out.unflatten(0, (B, T))
+        # `encoder_out` has shape: [B, T, H*W, out_features]
+
+        # apply SlotAttn on video frames via reusing slots
+        all_slots, all_attns, all_masks = [], [], []
+        hidden = None
+        for idx in range(T):
+            # init
+            if prev_slots is None:
+                latents = self.init_latents.repeat(B, 1, 1)  # [B, N, C]
+            else:
+                if self.pred_dict['pred_type'] == 'gru':
+                    latents, hidden = self.predictor(prev_slots, hidden)  # [B, N, C]
+                elif self.pred_dict['pred_type'] == 'grucell':
+                    latents = self.predictor(prev_slots.view(-1, self.slot_size), hidden)
+                    latents = latents.view(-1, self.num_slots, self.slot_size)
+                else:
+                    latents = self.predictor(prev_slots)
+            
+            # SA to get `post_slots`
+            slots, attns, masks = self.slot_attention(encoder_out[:, idx], latents)
+            all_slots.append(slots)
+            all_attns.append(attns) # [B, num_inputs, num_slots]
+            all_masks.append(masks.unflatten(-1, self.visual_resolution))
+
+            # next timestep
+            prev_slots = slots
+
+        # (B, T, self.num_slots, self.slot_size)
+        slots = torch.stack(all_slots, dim=1)
+        attn_maps = torch.stack(all_attns, dim=1)
+        # (B, T, self.num_slots, H, W)
+        masks = torch.stack(all_masks, dim=1).contiguous()
+
+        # resize masks to the original resolution
+        if not self.training and self.visual_resolution != self.resolution:
+            with torch.no_grad():
+                masks = masks.flatten(0, 2).unsqueeze(1)  # [BTN, 1, H, W]
+                masks = F.interpolate(
+                    masks,
+                    self.resolution,
+                    mode='bilinear',
+                    align_corners=False,
+                ).squeeze(1).unflatten(0, (B, T, self.num_slots))
+
+        return slots, attn_maps, masks, encoder_out
+
+    def forward(self, data_dict):
+        """A wrapper for model forward.
+
+        If the input video is too long in testing, we manually cut it.
+        """
+        img = data_dict['img']
+        T = img.shape[1]
+        if T <= self.clip_len or self.training:
+            return self._forward(
+                img, img_token_id=data_dict.get('token_id', None))
+
+        # try to find the max len to input each time
+        clip_len = T
+        while True:
+            try:
+                _ = self._forward(img[:, :clip_len])
+                del _
+                torch.cuda.empty_cache()
+                break
+            except RuntimeError:  # CUDA out of memory
+                clip_len = clip_len // 2 + 1
+        # update `clip_len`
+        self.clip_len = max(self.clip_len, clip_len)
+        # no need to split
+        if clip_len == T:
+            return self._forward(
+                img, img_token_id=data_dict.get('token_id', None))
+
+        # split along temporal dim
+        cat_dict = None
+        prev_slots = None
+        for clip_idx in range(0, T, clip_len):
+            out_dict = self._forward(
+                img[:, clip_idx:clip_idx + clip_len], prev_slots=prev_slots)
+            # because this should be in test mode, we detach the outputs
+            if cat_dict is None:
+                cat_dict = {k: [v.detach()] for k, v in out_dict.items()}
+            else:
+                for k, v in out_dict.items():
+                    cat_dict[k].append(v.detach())
+            prev_slots = cat_dict['post_slots'][-1][:, -1].detach().clone()
+            del out_dict
+            torch.cuda.empty_cache()
+        cat_dict = {k: torch_cat(v, dim=1) for k, v in cat_dict.items()}
+        return cat_dict
+
+    def _forward(self, img, img_token_id=None, prev_slots=None):
+        """Forward function.
+
+        Args:
+            img: [B, T, C, H, W]
+            img_token_id: [B, T, h*w], pre-computed dVAE tokenized img ids
+            prev_slots: [B, num_slots, slot_size] or None,
+                the `post_slots` from last timestep.
+        """
+        # # reset RNN states if this is the first frame
+        # if prev_slots is None:
+        #     self._reset_rnn()
+
+        slots, attn_maps, masks, encoder_out = self.encode(img, prev_slots)
+        # `slots` has shape: [B, T, self.num_slots, self.slot_size]
+        # `masks` has shape: [B, T, self.num_slots, H, W]
+
+        out_dict = {'slots': slots, 'attn_maps': attn_maps, 'masks': masks}
+        if self.testing:
+            return out_dict
+
+        # tokenize the images
+        if img_token_id is None:
+            with torch.no_grad():
+                img_token_id = self.dvae.tokenize(
+                    img, one_hot=False).flatten(2, 3).detach()
+        h, w = self.h, self.w
+        target_token_id = img_token_id.flatten(0, 1).long()  # [B*T, h*w]
+
+        # TransformerDecoder token prediction loss
+        in_slots = slots.flatten(0, 1)  # [B*T, N, C]
+        in_token_id = target_token_id[:, :-1]
+        pred_token_id = self.trans_decoder(in_slots, in_token_id)[:, -(h * w):]
+        # [B*T, h*w, vocab_size]
+        out_dict.update({
+            'pred_token_id': pred_token_id,
+            'target_token_id': target_token_id,
+        })
+
+        # decode image for loss computing
+        if self.use_img_recon_loss:
+            out_dict['gt_img'] = img.flatten(0, 1)  # [B*T, C, H, W]
+            logits = pred_token_id.transpose(2, 1).\
+                unflatten(-1, (self.h, self.w)).contiguous()  # [B*T, S, h, w]
+            z_logits = F.log_softmax(logits, dim=1)
+            z = gumbel_softmax(z_logits, tau=0.1, hard=False, dim=1)
+            recon_img = self.dvae.detokenize(z)  # [B*T, C, H, W]
+            out_dict['recon_img'] = recon_img
+        
+        if self.train_dvae:
+            simple_recon_img = self.dvae.detokenize(encoder_out.flatten(0, 1))
+            out_dict['simple_recon_img'] = simple_recon_img
+
+        return out_dict
+
+    def calc_train_loss(self, data_dict, out_dict):
+        """Compute loss that are general for SlotAttn models."""
+        pred_token_id = out_dict['pred_token_id'].flatten(0, 1)
+        target_token_id = out_dict['target_token_id'].flatten(0, 1)
+        token_recon_loss = F.cross_entropy(pred_token_id, target_token_id)
+        loss_dict = {'token_recon_loss': token_recon_loss}
+        if self.use_img_recon_loss:
+            gt_img = out_dict['gt_img']
+            recon_img = out_dict['recon_img']
+            recon_loss = F.mse_loss(recon_img, gt_img)
+            loss_dict['img_recon_loss'] = recon_loss
+        if self.train_dvae:
+            simple_recon_img = out_dict['simple_recon_img']
+            simple_recon_loss = F.mse_loss(simple_recon_img, gt_img)
+            loss_dict['simple_recon_loss'] = simple_recon_loss
+        if self.use_consistency_loss:
+            if self.pred_dict['const_type'] == 'repr':
+                B, T, num_slots, slot_dim = out_dict['slots'].shape
+                cosine_loss = 0.
+                for t in range(out_dict['slots'].shape[1]-1):
+                    z_curr = out_dict['slots'][:, t]
+                    z_next = out_dict['slots'][:, t+1]
+                    z_curr = z_curr / z_curr.norm(dim=-1, keepdim=True)
+                    z_next = z_next / z_next.norm(dim=-1, keepdim=True)
+                    pairwise_sim = torch.bmm(z_curr, z_next.transpose(1, 2)) # cosine similarity 
+                    loss = torch.pow(torch.diagonal(pairwise_sim, dim1=-2, dim2=-1) - torch.ones(num_slots, device=pairwise_sim.device).expand(B, -1), 2).mean() # MSE loss (diag elem only)
+                    cosine_loss += loss
+            elif self.pred_dict['const_type'] == 'attn':
+                B, T, num_inputs, num_slots = out_dict['attn_maps'].shape
+                cosine_loss = 0.
+                for t in range(out_dict['attn_maps'].shape[1]-1):
+                    attn_curr = out_dict['attn_maps'][:, t]
+                    attn_next = out_dict['attn_maps'][:, t+1]
+                    attn_curr = attn_curr / attn_curr.norm(dim=1, keepdim=True)
+                    attn_next = attn_next / attn_next.norm(dim=1, keepdim=True)
+
+                    pairwise_sim = torch.bmm(attn_curr.transpose(1, 2), attn_next) # cosine similarity 
+                    loss = torch.pow(torch.diagonal(pairwise_sim, dim1=-2, dim2=-1) - torch.ones(num_slots, device=pairwise_sim.device).expand(B, -1), 2).mean() # MSE loss (diag elem only) sum
+                    cosine_loss += loss
+            cosine_loss /= (out_dict['attn_maps'].shape[1]-1)
+            loss_dict['consistency_loss'] = cosine_loss
         return loss_dict

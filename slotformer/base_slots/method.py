@@ -18,7 +18,7 @@ def build_method(**kwargs):
         return SAViMethod(**kwargs)
     elif params.model == 'dVAE':
         return dVAEMethod(**kwargs)
-    elif params.model == 'STEVE':
+    elif params.model == 'STEVE' or params.model == 'ConsistentSTEVE':
         return STEVEMethod(**kwargs)
     else:
         raise NotImplementedError(f'{params.model} method is not implemented.')
