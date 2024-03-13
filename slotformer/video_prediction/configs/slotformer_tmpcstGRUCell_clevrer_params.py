@@ -65,7 +65,7 @@ class SlotFormerParams(BaseParams):
         dec_resolution=(8, 8),
         dec_ks=5,
         dec_norm='',
-        dec_ckp_path='pretrained/stosavi_tmpcstGRUcell_last-attn_clevrer_params/model_12-2.pth',
+        dec_ckp_path='pretrained/stosavi_tmpcstGRUcell_last-attn_diag_clevrer_params/model_12.pth',
     )
 
     # loss configs
