@@ -7,6 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 import torch
+import torchvision.utils as vutils
 
 from nerv.utils import load_obj, dump_obj, mkdir_or_exist
 
@@ -14,6 +15,25 @@ from models import build_model
 
 OBS_FRAMES = 128
 TARGET_LEN = 160
+
+
+@torch.no_grad()
+def _save_as_grid(rollout_combined, recons, masks, idx, prefix=''):
+    scale = 1.
+    # combine images in a way so we can display all outputs in one grid
+    # output rescaled to be between 0 and 1
+    out = (
+        torch.cat(
+            [
+                rollout_combined.unsqueeze(1),  # reconstructions
+                masks.repeat(1,1,3,1,1), # masks
+                recons * masks + (1. - masks) * scale,  # each slot
+            ],
+            dim=1,
+        )).mul(0.5).add(0.5).clamp(0,1)  # [T, num_slots+2, 3, H, W]
+    t = out.shape[0]
+    out = out.permute(1, 0, 2, 3, 4).flatten(0, 1) # [(num_slots+2)*T, 3, H, W]
+    vutils.save_image(out, f'/project/SlotFormer/checkpoint/outputs/{prefix}_{idx}.png', nrow=t)
 
 
 @torch.no_grad()
@@ -56,6 +76,10 @@ def rollout_video_slots(model, pre_slots):
             for i in range(TARGET_LEN - OBS_FRAMES)
         ], 1)  # [B, 32, N, C]
         slots = torch.cat([obs_slots, pred_slots], dim=1)  # [B, 160, N, C]
+
+        # recon_combined, recons, masks, _ = model.module.decode(slots[0])
+        # _save_as_grid(recon_combined, recons, masks, start_idx, prefix='rollout')
+
         assert slots.shape[1] == TARGET_LEN
         for i, fn in enumerate(all_fn[start_idx:end_idx]):
             all_slots[fn] = slots[i].cpu().numpy()
