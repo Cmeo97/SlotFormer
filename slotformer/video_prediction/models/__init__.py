@@ -1,4 +1,4 @@
-from .slotformer import SlotFormer
+from .slotformer import SlotFormer, ViTSlotFormer
 from .single_step_slotformer import SingleStepSlotFormer
 from .steve_slotformer import STEVESlotFormer
 
@@ -6,6 +6,15 @@ from .steve_slotformer import STEVESlotFormer
 def build_model(params):
     if params.model == 'SlotFormer':
         return SlotFormer(
+            resolution=params.resolution,
+            clip_len=params.input_frames,
+            slot_dict=params.slot_dict,
+            dec_dict=params.dec_dict,
+            rollout_dict=params.rollout_dict,
+            loss_dict=params.loss_dict,
+        )
+    elif params.model == 'ViTSlotFormer':
+        return ViTSlotFormer(
             resolution=params.resolution,
             clip_len=params.input_frames,
             slot_dict=params.slot_dict,

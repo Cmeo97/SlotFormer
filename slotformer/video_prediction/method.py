@@ -13,7 +13,7 @@ from slotformer.base_slots.method import SAViMethod, STEVEMethod, \
 
 def build_method(**kwargs):
     params = kwargs['params']
-    if params.model in ['SlotFormer', 'SingleStepSlotFormer']:
+    if params.model in ['SlotFormer', 'ViTSlotFormer', 'SingleStepSlotFormer']:
         return SlotFormerMethod(**kwargs)
     elif params.model == 'STEVESlotFormer':
         return STEVESlotFormerMethod(**kwargs)

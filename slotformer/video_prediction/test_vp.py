@@ -52,13 +52,13 @@ def adjust_params(params, batch_size):
         raise NotImplementedError('Unknown dataset: {}'.format(params.dataset))
 
     params.n_sample_frames = num_frames
-    if params.model == 'SlotFormer':
+    if params.model == 'SlotFormer' or params.model == 'ViTSlotFormer':
         params.loss_dict['rollout_len'] = num_frames - params.input_frames
     else:
         raise NotImplementedError(f'Unknown model: {params.model}')
 
     # setup rollout image
-    if params.model == 'SlotFormer':
+    if params.model == 'SlotFormer' or params.model == 'ViTSlotFormer':
         params.loss_dict['use_img_recon_loss'] = True
     params.load_img = True
 
@@ -91,7 +91,7 @@ def get_output(params, out_dict):
     history_len = params.input_frames
     rollout_len = params.n_sample_frames - history_len
 
-    if params.model == 'SlotFormer':
+    if params.model == 'SlotFormer' or params.model == 'ViTSlotFormer':
         pred = out_dict['recon_combined']
         pred_mask = postproc_mask(out_dict['masks'])
         pred_bbox = masks_to_boxes(pred_mask, params.slot_dict['num_slots'])

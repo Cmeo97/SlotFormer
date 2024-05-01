@@ -4,6 +4,7 @@ from .steve import STEVE, ConsistentSTEVE
 from .utils import get_lr, to_rgb_from_tensor, assert_shape, SoftPositionEmbed
 from .steve_utils import cosine_anneal, gumbel_softmax, make_one_hot
 from .steve_transformer import STEVETransformerDecoder
+from .vit_savi import ViTStoSAVi
 
 
 def build_model(params):
@@ -19,6 +20,16 @@ def build_model(params):
         )
     elif params.model == 'ConsistentStoSAVi':
         return ConsistentStoSAVi(
+            resolution=params.resolution,
+            clip_len=params.input_frames,
+            slot_dict=params.slot_dict,
+            enc_dict=params.enc_dict,
+            dec_dict=params.dec_dict,
+            pred_dict=params.pred_dict,
+            loss_dict=params.loss_dict,
+        )
+    elif params.model == 'ViTStoSAVi':
+        return ViTStoSAVi(
             resolution=params.resolution,
             clip_len=params.input_frames,
             slot_dict=params.slot_dict,

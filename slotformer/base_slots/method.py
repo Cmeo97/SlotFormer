@@ -14,7 +14,7 @@ from .models import cosine_anneal, get_lr, gumbel_softmax, make_one_hot, \
 
 def build_method(**kwargs):
     params = kwargs['params']
-    if params.model == 'StoSAVi' or params.model == 'ConsistentStoSAVi':
+    if params.model == 'StoSAVi' or params.model == 'ConsistentStoSAVi' or params.model == 'ViTStoSAVi':
         return SAViMethod(**kwargs)
     elif params.model == 'dVAE':
         return dVAEMethod(**kwargs)
@@ -146,7 +146,7 @@ class SAViMethod(SlotBaseMethod):
             out_dict = {k: v[0] for k, v in out_dict.items()}
             recon_combined, recons, masks = out_dict['post_recon_combined'], \
                 out_dict['post_recons'], out_dict['post_masks']
-            imgs = video.type_as(recon_combined)
+            imgs = out_dict['img'].type_as(recon_combined)
             save_video = self._make_video_grid(imgs, recon_combined, recons,
                                                masks)
             results.append(save_video)

@@ -22,7 +22,7 @@ class SlotFormerParams(BaseParams):
     # data settings
     dataset = 'clevrer_slots'
     data_root = './data/CLEVRER'
-    slots_root = './data/CLEVRER/rollout_clevrer_slots.pkl'
+    slots_root = './data/CLEVRER/vit_tmpcstGRUcell_rollout_clevrer_slots.pkl'
     # put absolute path here
     cur_dir = os.path.dirname(os.path.realpath(__file__))
     vocab_file = os.path.join(cur_dir, '../datasets/cache/CLEVRER_vocab.json')
@@ -43,7 +43,7 @@ class SlotFormerParams(BaseParams):
         max_choice_len,
         input_dim=16,
         pos_enc='learnable',
-        num_layers=12,
+        num_layers=12, # vanilla aloe uses 28
         num_heads=8,
         ffn_dim=512,
         norm_first=True,
